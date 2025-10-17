@@ -3,35 +3,31 @@ import { factories } from "@strapi/strapi";
 export default factories.createCoreController("api::phone.phone", ({ strapi }) => ({
   async getNext(ctx) {
     try {
-      //  Traer todos los phones
-      const phones = await strapi.db.query("api::phone.phone").findMany({
-        orderBy: { id: "asc" },
+      const knex = strapi.db.connection; // Obtenemos conexión directa
+
+      // Ejecutamos en transacción
+      const result = await knex.transaction(async (trx) => {
+        // 1️⃣ Buscar el primer número libre y bloquearlo para esta transacción
+        const [nextPhone] = await trx("phones")
+          .where({ used: false })
+          .orderBy("id", "asc")
+          .forUpdate() // Bloquea la fila durante la transacción
+          .limit(1);
+
+        if (!nextPhone) {
+          // 2️⃣ Si no hay libres, resetear todos
+          await trx("phones").update({ used: false });
+          const [first] = await trx("phones").orderBy("id", "asc").limit(1);
+          await trx("phones").where({ id: first.id }).update({ used: true });
+          return first;
+        }
+
+        // 3️⃣ Marcar el número encontrado como usado
+        await trx("phones").where({ id: nextPhone.id }).update({ used: true });
+        return nextPhone;
       });
 
-      if (!phones || phones.length === 0) {
-        return ctx.send({ error: "No hay números registrados" }, 400);
-      }
-
-      //  Buscar el primero que no esté usado
-      let nextPhone = phones.find(p => !p.used);
-
-      //  Si todos están usados, resetear todos a false y tomar el primero
-      if (!nextPhone) {
-        await strapi.db.query("api::phone.phone").updateMany({
-          where: {},
-          data: { used: false },
-        });
-        nextPhone = phones[0];
-      }
-
-      //  Marcar el número elegido como usado
-      await strapi.db.query("api::phone.phone").update({
-        where: { id: nextPhone.id },
-        data: { used: true },
-      });
-
-      // 5️⃣ Devolverlo
-      return ctx.send({ number: nextPhone.number });
+      return ctx.send({ number: result.number });
     } catch (err) {
       console.error("Error en getNext:", err);
       return ctx.send({ error: "Error interno del servidor" }, 500);
